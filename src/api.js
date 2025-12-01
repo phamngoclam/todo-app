@@ -1,5 +1,5 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
-console.log('fff: ', API_BASE_URL);
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://todo-list-oz6nin49u-lamphams-projects-9329530c.vercel.app/api';
+console.log('API URL: ', API_BASE_URL);
 // Fetch all todos
 export const fetchTodos = async () => {
     const response = await fetch(`${API_BASE_URL}/todos`);

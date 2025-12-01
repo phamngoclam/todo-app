@@ -11,31 +11,51 @@ app.use(express.json());
 
 // Initialize Firebase Admin
 let db;
+let firebaseInitialized = false;
+
 try {
-    // For local development, use service account file
+    // For Vercel/production, use environment variable
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        console.log('Using FIREBASE_SERVICE_ACCOUNT from environment');
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
         });
+        db = admin.firestore();
+        firebaseInitialized = true;
+        console.log('Firebase initialized successfully from environment variable');
     } else {
         // Fallback to local file for development
-        const serviceAccount = require('./firebase-service-account.json');
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount)
+        try {
+            const serviceAccount = require('./firebase-service-account.json');
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            db = admin.firestore();
+            firebaseInitialized = true;
+            console.log('Firebase initialized successfully from local file');
+        } catch (fileError) {
+            console.error('Firebase service account file not found. Please set FIREBASE_SERVICE_ACCOUNT environment variable.');
+        }
+    }
+} catch (error) {
+    console.error('Error initializing Firebase:', error.message);
+}
+
+// Middleware to check Firebase initialization
+const checkFirebase = (req, res, next) => {
+    if (!firebaseInitialized || !db) {
+        return res.status(503).json({
+            error: 'Firebase not initialized. Please configure FIREBASE_SERVICE_ACCOUNT environment variable in Vercel dashboard.'
         });
     }
-    db = admin.firestore();
-    console.log('Firebase initialized successfully');
-} catch (error) {
-    console.error('Error initializing Firebase:', error);
-    process.exit(1);
-}
+    next();
+};
 
 const COLLECTION_NAME = 'todos';
 
 // GET /api/todos - Fetch all todos
-app.get('/api/todos', async (req, res) => {
+app.get('/api/todos', checkFirebase, async (req, res) => {
     try {
         const snapshot = await db.collection(COLLECTION_NAME)
             .orderBy('createdAt', 'desc')
@@ -57,7 +77,7 @@ app.get('/api/todos', async (req, res) => {
 });
 
 // POST /api/todos - Add a new todo
-app.post('/api/todos', async (req, res) => {
+app.post('/api/todos', checkFirebase, async (req, res) => {
     try {
         const { text } = req.body;
         if (!text) {
@@ -85,7 +105,7 @@ app.post('/api/todos', async (req, res) => {
 });
 
 // PATCH /api/todos/:id - Toggle completion
-app.patch('/api/todos/:id', async (req, res) => {
+app.patch('/api/todos/:id', checkFirebase, async (req, res) => {
     try {
         const { id } = req.params;
         const docRef = db.collection(COLLECTION_NAME).doc(id);
@@ -115,7 +135,7 @@ app.patch('/api/todos/:id', async (req, res) => {
 });
 
 // PUT /api/todos - Update todo text
-app.put('/api/todos', async (req, res) => {
+app.put('/api/todos', checkFirebase, async (req, res) => {
     try {
         const { id } = req.query;
         console.log('ID: ' + id);
@@ -147,7 +167,7 @@ app.put('/api/todos', async (req, res) => {
 });
 
 // PUT /api/todos/reorder - Reorder todos
-app.put('/api/todos/reorder', async (req, res) => {
+app.put('/api/todos/reorder', checkFirebase, async (req, res) => {
     try {
         const { todos: newTodos } = req.body;
         if (!newTodos || !Array.isArray(newTodos)) {
@@ -182,7 +202,7 @@ app.put('/api/todos/reorder', async (req, res) => {
 });
 
 // DELETE /api/todos/:id - Delete a todo
-app.delete('/api/todos/:id', async (req, res) => {
+app.delete('/api/todos/:id', checkFirebase, async (req, res) => {
     try {
         const { id } = req.params;
         const docRef = db.collection(COLLECTION_NAME).doc(id);
@@ -201,7 +221,7 @@ app.delete('/api/todos/:id', async (req, res) => {
 });
 
 // DELETE /api/todos - Clear all todos
-app.delete('/api/todos', async (req, res) => {
+app.delete('/api/todos', checkFirebase, async (req, res) => {
     try {
         const snapshot = await db.collection(COLLECTION_NAME).get();
         const batch = db.batch();
