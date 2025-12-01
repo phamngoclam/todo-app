@@ -1,123 +1,230 @@
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
+const admin = require('firebase-admin');
 const path = require('path');
+
 const app = express();
-const port = 3001;
+const port = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
 
-const DATA_FILE = path.join(__dirname, 'todos.json');
-
-// Helper functions for file storage
-const loadTodos = () => {
-    try {
-        if (fs.existsSync(DATA_FILE)) {
-            const data = fs.readFileSync(DATA_FILE, 'utf8');
-            return JSON.parse(data);
-        }
-    } catch (err) {
-        console.error('Error loading todos:', err);
+// Initialize Firebase Admin
+let db;
+try {
+    // For local development, use service account file
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+    } else {
+        // Fallback to local file for development
+        const serviceAccount = require('./firebase-service-account.json');
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
     }
-    return [];
-};
+    db = admin.firestore();
+    console.log('Firebase initialized successfully');
+} catch (error) {
+    console.error('Error initializing Firebase:', error);
+    process.exit(1);
+}
 
-const saveTodos = (todos) => {
-    try {
-        fs.writeFileSync(DATA_FILE, JSON.stringify(todos, null, 2), 'utf8');
-    } catch (err) {
-        console.error('Error saving todos:', err);
-    }
-};
-
-// Initialize todos from file
-let todos = loadTodos();
+const COLLECTION_NAME = 'todos';
 
 // GET /api/todos - Fetch all todos
-app.get('/api/todos', (req, res) => {
-    res.json(todos);
+app.get('/api/todos', async (req, res) => {
+    try {
+        const snapshot = await db.collection(COLLECTION_NAME)
+            .orderBy('createdAt', 'desc')
+            .get();
+
+        const todos = [];
+        snapshot.forEach(doc => {
+            todos.push({
+                id: parseInt(doc.id),
+                ...doc.data()
+            });
+        });
+
+        res.json(todos);
+    } catch (error) {
+        console.error('Error fetching todos:', error);
+        res.status(500).json({ error: 'Failed to fetch todos' });
+    }
 });
 
 // POST /api/todos - Add a new todo
-app.post('/api/todos', (req, res) => {
-    const { text } = req.body;
-    if (!text) {
-        return res.status(400).json({ error: 'Text is required' });
+app.post('/api/todos', async (req, res) => {
+    try {
+        const { text } = req.body;
+        if (!text) {
+            return res.status(400).json({ error: 'Text is required' });
+        }
+
+        const id = Date.now();
+        const newTodo = {
+            text,
+            completed: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+
+        await db.collection(COLLECTION_NAME).doc(id.toString()).set(newTodo);
+
+        res.status(201).json({
+            id,
+            ...newTodo,
+            createdAt: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('Error creating todo:', error);
+        res.status(500).json({ error: 'Failed to create todo' });
     }
-    const newTodo = {
-        id: Date.now(),
-        text,
-        completed: false
-    };
-    todos.unshift(newTodo);
-    saveTodos(todos);
-    res.status(201).json(newTodo);
 });
 
 // PATCH /api/todos/:id - Toggle completion
-app.patch('/api/todos/:id', (req, res) => {
-    const { id } = req.params;
-    const todoIndex = todos.findIndex(t => t.id === parseInt(id));
+app.patch('/api/todos/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const docRef = db.collection(COLLECTION_NAME).doc(id);
+        const doc = await docRef.get();
 
-    if (todoIndex === -1) {
-        console.log('Todo not found....');
-        return res.status(404).json({ error: 'Todo not found' });
+        if (!doc.exists) {
+            console.log('Todo not found....');
+            return res.status(404).json({ error: 'Todo not found' });
+        }
+
+        const currentData = doc.data();
+        const updatedCompleted = !currentData.completed;
+
+        await docRef.update({
+            completed: updatedCompleted
+        });
+
+        res.json({
+            id: parseInt(id),
+            ...currentData,
+            completed: updatedCompleted
+        });
+    } catch (error) {
+        console.error('Error updating todo:', error);
+        res.status(500).json({ error: 'Failed to update todo' });
     }
-
-    todos[todoIndex].completed = !todos[todoIndex].completed;
-    saveTodos(todos);
-    res.json(todos[todoIndex]);
 });
 
-// PUT /api/todos/:id - Update todo text
-app.put('/api/todos', (req, res) => {
-    const { id } = req.query;
-    console.log('ID: ' + id);
-    const { text } = req.body;
-    console.log('Text: ' + text);
-    const todoIndex = todos.findIndex(t => t.id === parseInt(id));
+// PUT /api/todos - Update todo text
+app.put('/api/todos', async (req, res) => {
+    try {
+        const { id } = req.query;
+        console.log('ID: ' + id);
+        const { text } = req.body;
+        console.log('Text: ' + text);
 
-    if (todoIndex === -1) {
-        return res.status(404).json({ error: 'Todo not found..' });
+        if (!text) {
+            return res.status(400).json({ error: 'Text is required' });
+        }
+
+        const docRef = db.collection(COLLECTION_NAME).doc(id);
+        const doc = await docRef.get();
+
+        if (!doc.exists) {
+            return res.status(404).json({ error: 'Todo not found..' });
+        }
+
+        await docRef.update({ text });
+
+        const updatedDoc = await docRef.get();
+        res.json({
+            id: parseInt(id),
+            ...updatedDoc.data()
+        });
+    } catch (error) {
+        console.error('Error updating todo text:', error);
+        res.status(500).json({ error: 'Failed to update todo text' });
     }
-
-    if (!text) {
-        return res.status(400).json({ error: 'Text is required' });
-    }
-
-    todos[todoIndex].text = text;
-    saveTodos(todos);
-    res.json(todos[todoIndex]);
 });
 
 // PUT /api/todos/reorder - Reorder todos
-app.put('/api/todos/reorder', (req, res) => {
-    const { todos: newTodos } = req.body;
-    if (!newTodos || !Array.isArray(newTodos)) {
-        return res.status(400).json({ error: 'Invalid todos array' });
+app.put('/api/todos/reorder', async (req, res) => {
+    try {
+        const { todos: newTodos } = req.body;
+        if (!newTodos || !Array.isArray(newTodos)) {
+            return res.status(400).json({ error: 'Invalid todos array' });
+        }
+
+        // Use batch write for atomic updates
+        const batch = db.batch();
+
+        // Delete all existing todos
+        const snapshot = await db.collection(COLLECTION_NAME).get();
+        snapshot.forEach(doc => {
+            batch.delete(doc.ref);
+        });
+
+        // Add reordered todos
+        newTodos.forEach(todo => {
+            const docRef = db.collection(COLLECTION_NAME).doc(todo.id.toString());
+            batch.set(docRef, {
+                text: todo.text,
+                completed: todo.completed,
+                createdAt: admin.firestore.Timestamp.now()
+            });
+        });
+
+        await batch.commit();
+        res.json(newTodos);
+    } catch (error) {
+        console.error('Error reordering todos:', error);
+        res.status(500).json({ error: 'Failed to reorder todos' });
     }
-    todos = newTodos;
-    saveTodos(todos);
-    res.json(todos);
 });
 
 // DELETE /api/todos/:id - Delete a todo
-app.delete('/api/todos/:id', (req, res) => {
-    const { id } = req.params;
-    todos = todos.filter(t => t.id !== parseInt(id));
-    saveTodos(todos);
-    res.status(204).send();
+app.delete('/api/todos/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const docRef = db.collection(COLLECTION_NAME).doc(id);
+        const doc = await docRef.get();
+
+        if (!doc.exists) {
+            return res.status(404).json({ error: 'Todo not found' });
+        }
+
+        await docRef.delete();
+        res.status(204).send();
+    } catch (error) {
+        console.error('Error deleting todo:', error);
+        res.status(500).json({ error: 'Failed to delete todo' });
+    }
 });
 
 // DELETE /api/todos - Clear all todos
-app.delete('/api/todos', (req, res) => {
-    todos = [];
-    saveTodos(todos);
-    res.status(204).send();
+app.delete('/api/todos', async (req, res) => {
+    try {
+        const snapshot = await db.collection(COLLECTION_NAME).get();
+        const batch = db.batch();
+
+        snapshot.forEach(doc => {
+            batch.delete(doc.ref);
+        });
+
+        await batch.commit();
+        res.status(204).send();
+    } catch (error) {
+        console.error('Error clearing todos:', error);
+        res.status(500).json({ error: 'Failed to clear todos' });
+    }
 });
 
-app.listen(port, () => {
-    console.log(`Server running at http://localhost:${port}`);
-    console.log(`Data stored in: ${DATA_FILE}`);
-});
+// Only start the server if not in Vercel environment
+if (process.env.VERCEL !== '1') {
+    app.listen(port, () => {
+        console.log(`Server running at http://localhost:${port}`);
+        console.log(`Using Firebase Firestore for data storage`);
+    });
+}
+
+// Export for Vercel serverless
+module.exports = app;

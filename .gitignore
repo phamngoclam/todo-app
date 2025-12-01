@@ -11,10 +11,16 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
 
 # Server
 server/node_modules
 server/todos.json
+server/firebase-service-account.json
+server/.env
+
+# Vercel
+.vercel
 
 # Editor directories and files
 .vscode/*
